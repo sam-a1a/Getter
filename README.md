@@ -1,6 +1,6 @@
 # Getter — Instagram downloads for Chrome
 
-A local Chrome extension that saves Instagram photos and videos into a folder you choose, including a folder on your Desktop. No backend, account signup, API key, or runtime build step.
+A local Chrome extension, written in TypeScript, that saves Instagram photos and videos into a folder you choose, including a folder on your Desktop. No backend, account signup, or API key. Compiled files are included, so installation does not require Node.js or a build step.
 
 ## Install
 
@@ -14,6 +14,8 @@ A local Chrome extension that saves Instagram photos and videos into a folder yo
 6. Click Getter in Chrome's toolbar, then **Choose folder**. Select or create a folder on your Desktop, for example `Instagram downloads`.
 
 Chrome must show its own folder permission dialog. Getter remembers your choice; Chrome may ask you to grant access again after restarting.
+
+**Updating an existing installation:** pull the latest repository changes, open `chrome://extensions`, click **Reload** on Getter, then refresh Instagram and reopen the download manager. The `extension/` folder stays at the same path.
 
 ## Use
 
@@ -55,17 +57,26 @@ There is no password entry or cookie export. The extension sends authenticated m
 
 ## Development and verification
 
-The extension uses vanilla JavaScript and Manifest V3. Runtime files are in `extension/`; load that folder directly.
+The extension uses **strict TypeScript** and Manifest V3. Edit `src/`, then run `npm run build`. TypeScript checks the source, build script, and tests; esbuild bundles the browser entry points into the JavaScript Chrome requires. No libraries are needed at runtime.
+
+- `src/`: typed extension source, including shared media, message, queue, and storage types.
+- `extension/`: manifest, HTML, CSS, icons, and generated JavaScript. Load this folder in Chrome. Generated bundles are committed so downloading the repository is enough to install it; do not edit them manually.
+- `tests/`: TypeScript unit and mocked browser integration tests.
+- `scripts/build.ts`: browser build. Python utilities generate icons and the distributable ZIP.
 
 ```sh
-npm install
+npm ci
+npm run typecheck
 npm test
+npm run build
 npx playwright install chromium
 npm run test:browser
 npm run package
 ```
 
 The ZIP is written to `dist/Getter-Chrome.zip`. To use an existing compatible Chrome for Testing installation for browser tests, set `GETTER_CHROMIUM_PATH` to its executable path.
+
+Commit the updated `extension/*.js` bundles along with changes to `src/`. Both `npm run test:browser` and `npm run package` build and typecheck first.
 
 Automated browser tests load the real extension in an isolated browser profile, mock Instagram and CDN responses, and write through real Chrome filesystem handles into that profile's origin-private test storage. They verify the queue, pagination, all media categories, carousel videos, cancellation, duplicate skipping, rate-limit handling, and the single-manager lock. Screenshots are written to `artifacts/`. These fixtures do **not** establish that every endpoint currently works with a real logged-in Instagram account; that requires a live account check after installation.
 

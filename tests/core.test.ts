@@ -1,19 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import '../extension/core.js';
-import '../extension/instagram.js';
-const C = globalThis.GetterCore;
-const { Instagram, InstagramError } = globalThis.GetterInstagram;
-const url = n => `https://scontent.cdninstagram.com/${n}.jpg`;
-const photo = (id = '1') => ({ pk: id, media_type: 1, image_versions2: { candidates: [{ url: url(id), width: 1080, height: 1350 }] } });
-const client = request => new Instagram({ request, signal: new AbortController().signal, interval: 0 });
-async function collect(iterator) { const out = []; for await (const batch of iterator) out.push(batch); return out; }
+import * as C from '../src/core.js';
+import { Instagram, InstagramError } from '../src/instagram.js';
+import type { ApiParams, InstagramRequest, RawMedia, RequestMethod } from '../src/types.js';
+const url = (n: string | number) => `https://scontent.cdninstagram.com/${n}.jpg`;
+const photo = (id = '1'): RawMedia => ({ pk: id, media_type: 1, image_versions2: { candidates: [{ url: url(id), width: 1080, height: 1350 }] } });
+const client = (request: InstagramRequest) => new Instagram({ request, signal: new AbortController().signal, interval: 0 });
+async function collect<T>(iterator: AsyncIterable<T>): Promise<T[]> { const out = []; for await (const batch of iterator) out.push(batch); return out; }
 
 test('recognizes profiles, reels, individual stories and highlights, excludes non-profile routes', () => {
   for (const [path, type] of [['/alice/', 'profile'], ['/alice/reels/', 'profile'], ['/p/ABC-123/', 'post'], ['/reel/AB_12/', 'post'], ['/stories/alice/123/', 'story'], ['/stories/highlights/456/789/', 'highlight'], ['/direct/inbox/', 'unsupported'], ['/accounts/login/', 'unsupported'], ['/explore/', 'unsupported']])
     assert.equal(C.contextFromUrl(`https://www.instagram.com${path}`).type, type, path);
   assert.equal(C.contextFromUrl('https://evil.com/alice/').type, 'unsupported');
-  assert.equal(C.contextFromUrl('https://www.instagram.com/stories/highlights/456/789/').storyId, '789');
+  const highlight = C.contextFromUrl('https://www.instagram.com/stories/highlights/456/789/');
+  assert.equal(highlight.storyId, '789');
 });
 test('post identifiers keep their full precision', () => {
   assert.equal(C.shortcodeToId('BAAAAAAAAAA'), '1152921504606846976');
@@ -41,13 +41,13 @@ test('sanitizes directory components and respects actual response formats', () =
   assert.throws(() => C.extensionFor({ url: url(1), type: 'video' }, 'image/jpeg'), /wrong/);
 });
 test('follows all pages and detects repeated cursors instead of claiming completion', async () => {
-  const cursors = [];
+  const cursors: Array<string | number | boolean | undefined> = [];
   const api = client(async (path, params) => { cursors.push(params.max_id); return { items: [photo()], more_available: true, next_max_id: 'repeat' }; });
   await assert.rejects(collect(api.feed({ id: '123', username: 'alice' })), /pagination/);
   assert.deepEqual(cursors, [undefined, 'repeat']);
 });
 test('everything traverses posts, reels, current stories and every highlight', async () => {
-  const calls = [];
+  const calls: [string, ApiParams, RequestMethod][] = [];
   const api = client(async (path, params, method) => {
     calls.push([path, params, method]);
     if (path === 'users/web_profile_info/') return { data: { user: { id: '123', username: 'alice' } } };
@@ -56,13 +56,13 @@ test('everything traverses posts, reels, current stories and every highlight', a
     if (path === 'clips/user/') return { items: [{ media: photo('3') }], paging_info: { more_available: false } };
     if (path === 'feed/user/123/reel_media/') return { items: [photo('4')] };
     if (path === 'highlights/123/highlights_tray/') return { tray: [{ id: 'highlight:5', title: 'Trip' }, { id: 'highlight:6', title: 'Trip' }] };
-    if (path === 'feed/reels_media/') return { reels: { [params.reel_ids]: { items: [photo(params.reel_ids)], user: { username: 'alice' } } } };
+    if (path === 'feed/reels_media/') return { reels: { [String(params.reel_ids)]: { items: [photo(String(params.reel_ids))], user: { username: 'alice' } } } };
     throw new Error(path);
   });
   const batches = await collect(api.collect({ action: 'everything', context: { type: 'profile', username: 'alice' } }));
   assert.equal(batches.length, 6); assert.equal(batches.flatMap(b => b.media).length, 6);
-  assert.equal(batches[4].info.collection, 'Trip_5'); assert.equal(batches[5].info.collection, 'Trip_6');
-  assert.equal(calls.find(c => c[0] === 'clips/user/')[2], 'POST');
+  assert.equal(batches[4].info!.collection, 'Trip_5'); assert.equal(batches[5].info!.collection, 'Trip_6');
+  assert.equal(calls.find(c => c[0] === 'clips/user/')![2], 'POST');
 });
 test('ordinary endpoint failures are reported while rate limits stop immediately', async () => {
   let requests = 0;
@@ -80,7 +80,7 @@ test('ordinary endpoint failures are reported while rate limits stop immediately
 test('downloads exactly the captured story even if the viewing tab has advanced', async () => {
   const api = client(async path => path === 'users/web_profile_info/' ? { data: { user: { id: '123' } } } : { items: [photo('100'), photo('200')] });
   const result = await collect(api.collect({ action: 'current', context: { type: 'story', username: 'alice', storyId: '100' } }));
-  assert.deepEqual(result[0].media.map(m => m.pk), ['100']);
+  assert.deepEqual(result[0].media!.map(m => m.pk), ['100']);
 });
 test('expired current stories fail explicitly instead of reporting an empty successful job', async () => {
   const api = client(async path => path === 'users/web_profile_info/' ? { data: { user: { id: '123' } } } : { reel: null });
@@ -88,6 +88,6 @@ test('expired current stories fail explicitly instead of reporting an empty succ
 });
 test('cancellation prevents further requests', async () => {
   const controller = new AbortController(); controller.abort(); let called = false;
-  const api = new Instagram({ signal: controller.signal, request: () => { called = true; } });
+  const api = new Instagram({ signal: controller.signal, request: async () => { called = true; return {}; } });
   await assert.rejects(api.user('alice'), { name: 'AbortError' }); assert.equal(called, false);
 });

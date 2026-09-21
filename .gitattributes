@@ -1,0 +1,2 @@
+# Chrome runs the compiled JavaScript; TypeScript in src/ is the source of truth.
+extension/*.js linguist-generated=true

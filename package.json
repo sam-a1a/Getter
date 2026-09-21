@@ -1,12 +1,22 @@
 {
   "name": "getter-instagram",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test tests/*.test.js",
-    "test:browser": "node tests/browser.mjs",
-    "package": "python3 scripts/package.py"
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && tsx scripts/build.ts",
+    "test": "tsx --test tests/*.test.ts",
+    "test:browser": "npm run build && tsx tests/browser.ts",
+    "package": "npm run build && python3 scripts/package.py"
   },
-  "devDependencies": { "playwright": "^1.55.0" }
+  "devDependencies": {
+    "@types/chrome": "^0.3.0",
+    "@types/node": "^26.6.2",
+    "@types/wicg-file-system-access": "^2023.10.7",
+    "esbuild": "^0.28.2",
+    "playwright": "^1.55.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
 }

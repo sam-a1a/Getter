@@ -1,4 +1,5 @@
 import { chromium } from 'playwright';
+import type { InstagramResponse, LocalState, RawMedia, SessionState } from '../src/types.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -13,11 +14,11 @@ const context = await chromium.launchPersistentContext(profile, {
   args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`],
   viewport: { width: 1360, height: 980 }
 });
-const failures = [];
+const failures: string[] = [];
 let mode = 'normal', postPages = 0;
-const mediaUrl = id => `https://test.cdninstagram.com/${id}.jpg`;
-const photo = id => ({ pk: id, media_type: 1, user: { username: 'studio.june' }, taken_at: 1700000000, image_versions2: { candidates: [{ url: mediaUrl(id), width: 1080, height: 1350 }] } });
-const video = id => ({ pk: id, media_type: 2, user: { username: 'studio.june' }, taken_at: 1700000000, video_versions: [{ url: `https://test.cdninstagram.com/${id}.mp4`, width: 1080, height: 1920 }] });
+const mediaUrl = (id: string) => `https://test.cdninstagram.com/${id}.jpg`;
+const photo = (id: string): RawMedia => ({ pk: id, media_type: 1, user: { username: 'studio.june' }, taken_at: 1700000000, image_versions2: { candidates: [{ url: mediaUrl(id), width: 1080, height: 1350 }] } });
+const video = (id: string): RawMedia => ({ pk: id, media_type: 2, user: { username: 'studio.june' }, taken_at: 1700000000, video_versions: [{ url: `https://test.cdninstagram.com/${id}.mp4`, width: 1080, height: 1920 }] });
 context.on('page', page => page.on('pageerror', error => failures.push(error.message)));
 await context.route('https://test.cdninstagram.com/**', route => route.fulfill({ status: 200, contentType: route.request().url().endsWith('.mp4') ? 'video/mp4' : 'image/jpeg', body: 'fixture-media-content' }));
 await context.route('https://www.instagram.com/**', async route => {
@@ -27,7 +28,7 @@ await context.route('https://www.instagram.com/**', async route => {
   }
   if (mode === 'limited') { await route.fulfill({ status: 429, json: { status: 'fail' } }); return; }
   if (mode === 'slow') { await new Promise(r => setTimeout(r, 4000)); }
-  let data;
+  let data: InstagramResponse;
   const p = url.pathname.replace('/api/v1/', '');
   if (p === 'users/web_profile_info/') data = { data: { user: { id: '123', username: 'studio.june' } } };
   else if (p === 'feed/user/123/') {
@@ -41,7 +42,7 @@ await context.route('https://www.instagram.com/**', async route => {
   else { await route.fulfill({ status: 404, json: { status: 'fail' } }); return; }
   await route.fulfill({ status: 200, json: { status: 'ok', ...data } });
 });
-async function waitFor(predicate, message, timeout = 30000) {
+async function waitFor(predicate: () => Promise<boolean>, message: string, timeout = 30000) {
   const start = Date.now();
   while (Date.now() - start < timeout) { if (await predicate()) return; await new Promise(r => setTimeout(r, 100)); }
   throw new Error(`Timed out: ${message}`);
@@ -54,6 +55,7 @@ try {
   await instagram.goto('https://www.instagram.com/studio.june/');
   await instagram.locator('#getter-extension').waitFor();
   const tabId = await worker.evaluate(async () => (await chrome.tabs.query({ url: 'https://www.instagram.com/*' }))[0].id);
+  assert.ok(tabId);
   await worker.evaluate(async sourceTabId => chrome.storage.session.set({ sourceTabId }), tabId);
   const manager = await context.newPage();
   await manager.goto(`chrome-extension://${id}/manager.html`);
@@ -68,21 +70,29 @@ try {
   });
   await manager.getByRole('button', { name: 'Choose folder' }).click();
   await waitFor(() => manager.locator('#folder-name').textContent().then(t => t === 'Getter test downloads'), 'folder selection');
-  async function historyCount() { return manager.evaluate(async () => (await chrome.storage.local.get('history')).history?.length || 0); }
-  async function job(action) {
+  async function historyCount() { return manager.evaluate(async () => (await chrome.storage.local.get<LocalState>('history')).history?.length || 0); }
+  async function job(action: string) {
     const before = await historyCount();
     await manager.getByRole('button', { name: action, exact: true }).click();
     await waitFor(async () => await historyCount() > before, action, 45000);
-    return manager.evaluate(async () => (await chrome.storage.local.get('history')).history[0]);
+    return manager.evaluate(async () => (await chrome.storage.local.get<LocalState>('history')).history![0]);
   }
   const first = await job('Download everything');
   assert.match(first.detail, /Complete · 8 saved · 0 skipped · 0 failed/);
   assert.equal(postPages, 2);
   const saved = await manager.evaluate(async () => {
     const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('Getter test downloads');
-    const files = [];
-    async function walk(dir, prefix = '') { for await (const [name, handle] of dir) { if (handle.kind === 'directory') await walk(handle, `${prefix}${name}/`); else files.push({ path: `${prefix}${name}`, size: (await handle.getFile()).size }); } }
-    await walk(root); return files;
+    const files: { path: string; size: number }[] = [];
+    // Object methods stay self-contained when Playwright serializes this callback.
+    const scanner = {
+      async walk(dir: FileSystemDirectoryHandle, prefix = ''): Promise<void> {
+        for await (const [name, handle] of dir) {
+          if (handle.kind === 'directory') await this.walk(handle as FileSystemDirectoryHandle, `${prefix}${name}/`);
+          else files.push({ path: `${prefix}${name}`, size: (await (handle as FileSystemFileHandle).getFile()).size });
+        }
+      }
+    };
+    await scanner.walk(root); return files;
   });
   assert.equal(saved.length, 8); assert.ok(saved.every(f => f.size === 21));
   assert.ok(saved.some(f => /highlights\/Summer_999\//.test(f.path)));
@@ -113,12 +123,12 @@ try {
   await manager.locator('#active-card').waitFor({ state: 'visible' });
   await manager.getByRole('button', { name: 'Stop & clear queue' }).click();
   await waitFor(async () => await historyCount() > beforeStop, 'cancellation');
-  const stopped = await manager.evaluate(async () => (await chrome.storage.local.get('history')).history[0]);
+  const stopped = await manager.evaluate(async () => (await chrome.storage.local.get<LocalState>('history')).history![0]);
   assert.match(stopped.detail, /Stopped/);
-  assert.equal(await manager.evaluate(async () => (await chrome.storage.session.get('jobs')).jobs.length), 0);
+  assert.equal(await manager.evaluate(async () => (await chrome.storage.session.get<SessionState>('jobs')).jobs!.length), 0);
 
   const duplicate = await context.newPage(); await duplicate.goto(manager.url());
-  await waitFor(() => duplicate.locator('#banner').textContent().then(t => t.includes('already open')), 'single-manager lock');
+  await waitFor(() => duplicate.locator('#banner').textContent().then(t => Boolean(t?.includes('already open'))), 'single-manager lock');
   await duplicate.close();
   assert.deepEqual(failures, []);
   console.log('PASS: real extension load; content controls; folder handle; 8-file paginated collection; deduplication; current story; carousel; rate limit; stop; single-manager lock.');

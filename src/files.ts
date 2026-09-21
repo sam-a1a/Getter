@@ -1,11 +1,27 @@
-export async function loadDirectory() {
+import * as C from './core.js';
+import { asError } from './errors.js';
+import type { DownloadItem } from './types.js';
+
+export interface FileAccess {
+  getFile(): Promise<Pick<File, 'size'>>;
+  createWritable(): Promise<WritableStream<Uint8Array>>;
+}
+export interface DirectoryAccess {
+  getDirectoryHandle(name: string, options?: FileSystemGetDirectoryOptions): Promise<DirectoryAccess>;
+  getFileHandle(name: string, options?: FileSystemGetFileOptions): Promise<FileAccess>;
+  removeEntry(name: string): Promise<void>;
+}
+interface SaveOptions { signal?: AbortSignal; fetcher?: typeof fetch; onProgress?: (bytes: number) => void }
+export interface SaveResult { skipped: boolean; path: string; bytes: number }
+
+export async function loadDirectory(): Promise<FileSystemDirectoryHandle | undefined> {
   return dbOperation('readonly', store => store.get('directory'));
 }
-export async function storeDirectory(handle) {
+export async function storeDirectory(handle: FileSystemDirectoryHandle): Promise<IDBValidKey> {
   return dbOperation('readwrite', store => store.put(handle, 'directory'));
 }
-function dbOperation(mode, operation) {
-  return new Promise((resolve, reject) => {
+function dbOperation<T>(mode: IDBTransactionMode, operation: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
     const open = indexedDB.open('getter-folders', 1);
     open.onupgradeneeded = () => open.result.createObjectStore('settings');
     open.onerror = () => reject(open.error);
@@ -20,8 +36,7 @@ function dbOperation(mode, operation) {
   });
 }
 
-export async function saveMedia(root, item, { signal, fetcher = fetch, onProgress = () => {} } = {}) {
-  const C = globalThis.GetterCore;
+export async function saveMedia(root: DirectoryAccess, item: DownloadItem, { signal, fetcher = fetch, onProgress = () => {} }: SaveOptions = {}): Promise<SaveResult> {
   if (!C.isMediaUrl(item.url) || !['video', 'image'].includes(item.type)) throw new Error('Untrusted media URL or type.');
   signal?.throwIfAborted();
   const timeout = AbortSignal.timeout(120000);
@@ -35,20 +50,20 @@ export async function saveMedia(root, item, { signal, fetcher = fetch, onProgres
     combined.throwIfAborted();
     directory = await directory.getDirectoryHandle(name, { create: true });
   }
-  const name = path.at(-1);
-  let handle, created = false;
+  const name = path.at(-1)!;
+  let handle: FileAccess | undefined, created = false;
   try {
     handle = await directory.getFileHandle(name);
     const file = await handle.getFile();
     if (file.size > 0) { await response.body?.cancel(); return { skipped: true, path: path.join('/'), bytes: file.size }; }
-  } catch (e) { if (e.name !== 'NotFoundError') throw e; }
+  } catch (e) { if (asError(e).name !== 'NotFoundError') throw e; }
   if (!handle) { handle = await directory.getFileHandle(name, { create: true }); created = true; }
-  let writable, bytes = 0;
+  let writable: WritableStream<Uint8Array> | undefined, bytes = 0;
   try {
     combined.throwIfAborted();
     if (!response.body) throw new Error('The media response was empty.');
     writable = await handle.createWritable();
-    const counter = new TransformStream({ transform(chunk, controller) {
+    const counter = new TransformStream<Uint8Array, Uint8Array>({ transform(chunk, controller) {
       bytes += chunk.byteLength; onProgress(bytes); controller.enqueue(chunk);
     }});
     // Keep the final close explicit: an empty/truncated transfer must never count as saved.
