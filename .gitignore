@@ -1,0 +1,10 @@
+node_modules/
+.venv/
+.idea/
+artifacts/*
+!artifacts/.gitkeep
+dist/
+.DS_Store
+.env
+.env.*
+!.env.example
